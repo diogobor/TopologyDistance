@@ -16,6 +16,12 @@ namespace TopologyDistance
             //string filePath = @"D:\Experimental_data\Cong\cytoscapedefaultnode.csv";
             string filePath = @"D:\Experimental_data\Cong\cytoscape.csv";
             string fastaFile = @"D:\Experimental_data\Cong\20220323_CW_DSBSO_Paper_HEK_db.fasta";
+            string distance_file = @"D:\Experimental_data\Cong\distance_output.csv";
+            bool useAlphaFold = false;
+            int treashold_angstroms = 35;
+
+            if (Management.CleanTmpFiles() == false)
+                return;
 
             #region read fasta
             string[] fasta_lines = File.ReadAllLines(fastaFile);
@@ -154,30 +160,128 @@ namespace TopologyDistance
             }
             #endregion
 
-            int count_common = 0;
+
+            List<PPI> valid_PPIs = new();
+
+            int ppi_processed = 0;
+            int old_progress = 0;
+            double ppis_amount = ppis.Count;
+
             foreach (var ppi in ppis)
             {
+                ppi_processed++;
+                int new_progress = (int)((double)ppi_processed / (ppis_amount) * 100);
+                if (new_progress > old_progress)
+                {
+                    old_progress = new_progress;
+                    int currentLineCursor = Console.CursorTop;
+                    Console.SetCursorPosition(0, Console.CursorTop);
+                    Console.Write("INFO: PPIs processed: " + old_progress + "%");
+                    Console.SetCursorPosition(0, currentLineCursor);
+                }
+
                 Management.crosslinks = ppi.crosslinks;
                 Management.source_protein_name = ppi.proteinA.proteinID;
                 Management.target_protein_name = ppi.proteinB.proteinID;
 
-                Protein ptnA = Management.GetPDBidFromUniprot(ppi.proteinA.proteinID);
-                Protein ptnB = Management.GetPDBidFromUniprot(ppi.proteinB.proteinID);
+                if (useAlphaFold)
+                {
+                    string pdb_source = Management.CreatePDBFile(ppi.proteinA.proteinID, true, false);
+                    if (pdb_source.Equals("ERROR"))
+                    {
+                        Console.WriteLine("ERROR: Unable to create pdb source");
+                        continue;
+                    }
 
-                if (ptnA.proteinID == null || ptnB.proteinID == null) continue;
+                    string pdb_target = Management.CreatePDBFile(ppi.proteinB.proteinID, true, true);
+                    if (pdb_target.Equals("ERROR"))
+                    {
+                        Console.WriteLine("ERROR: Unable to create pdb target");
+                        continue;
+                    }
+                    Management.proteinChain_source = "A";
+                    Management.HasMoreThanOneChain_proteinTarget = false;
 
-                List<PDB> common_pdbs = (from pdb_a in ptnA.pdbIDs
-                                         from pdb_b in ptnB.pdbIDs
-                                         where pdb_a.entry == pdb_b.entry
-                                         select pdb_a).ToList();
+                    bool valid = Management.ProcessPDBorCIFfileWithSpecificChain(ppi.proteinA, ppi.proteinB, "B", pdb_source, pdb_target, true);
+                    if (valid)
+                        valid_PPIs.Add(ppi);
 
-                if (common_pdbs.Count == 0) continue;
+                }
+                else
+                {
+                    Protein ptnA = Management.GetPDBidFromUniprot(ppi.proteinA.proteinID);
+                    Protein ptnB = Management.GetPDBidFromUniprot(ppi.proteinB.proteinID);
 
-                Management.ProcessPDBFile(common_pdbs[0].entry, ptnA, ptnB, ptnA.gene + "#" + ptnB.gene, false, "", false);
-                count_common++;
+                    if (ptnA.proteinID == null || ptnB.proteinID == null) continue;
+
+                    List<PDB> common_pdbs = (from pdb_a in ptnA.pdbIDs
+                                             from pdb_b in ptnB.pdbIDs
+                                             where pdb_a.entry == pdb_b.entry
+                                             select pdb_a).ToList();
+
+                    if (common_pdbs.Count == 0) continue;
+
+                    #region check cross-links positions and protein length
+                    List<Crosslink> crosslinks_ptn = ppi.crosslinks;
+
+                    string[] cols = Regex.Split(ptnA.pdbIDs[0].positions, "-");
+                    int min_pos_pdb_a = int.Parse(cols[0]);
+                    int max_pos_pdb_a = -1;
+                    if (cols[1].Contains(","))
+                        max_pos_pdb_a = int.Parse(Regex.Split(cols[1], ",")[0]);
+                    else
+                        max_pos_pdb_a = int.Parse(cols[1]);
+
+                    cols = Regex.Split(ptnB.pdbIDs[0].positions, "-");
+                    int min_pos_pdb_b = int.Parse(cols[0]);
+                    int max_pos_pdb_b = -1;
+                    if (cols[1].Contains(","))
+                        max_pos_pdb_b = int.Parse(Regex.Split(cols[1], ",")[0]);
+                    else
+                        max_pos_pdb_b = int.Parse(cols[1]);
+
+                    crosslinks_ptn.RemoveAll(a => a.sourceAccessionNumberProtein.Equals(ppi.proteinA.proteinID) &&
+                    (a.sourcePosition + min_pos_pdb_a) > max_pos_pdb_a);
+
+                    crosslinks_ptn.RemoveAll(a => a.targetAccessionNumberProtein.Equals(ppi.proteinA.proteinID) &&
+                    (a.targetPosition + min_pos_pdb_a) > max_pos_pdb_a);
+
+                    crosslinks_ptn.RemoveAll(a => a.sourceAccessionNumberProtein.Equals(ppi.proteinB.proteinID) &&
+                    (a.sourcePosition + min_pos_pdb_b) > max_pos_pdb_b);
+
+                    crosslinks_ptn.RemoveAll(a => a.targetAccessionNumberProtein.Equals(ppi.proteinB.proteinID) &&
+                    (a.targetPosition + min_pos_pdb_b) > max_pos_pdb_b);
+
+                    if (crosslinks_ptn.Count == 0) continue;
+
+                    #endregion
+
+
+                    bool valid = Management.ProcessPDBFile(common_pdbs[0].entry, ptnA, ptnB, ptnA.gene + "#" + ptnB.gene, false, "", false, false);
+                    if (valid)
+                        valid_PPIs.Add(ppi);
+                }
                 Console.WriteLine();
             }
-            Console.WriteLine();
+
+            Console.WriteLine("Done!");
+            Console.WriteLine($"{valid_PPIs.Count} from {ppis.Count} have been computed.");
+
+            int lower_threshold = 0;
+            int upper_threshold = 0;
+            StringBuilder sb_distances = new();
+            foreach (var _ppi in valid_PPIs)
+            {
+                lower_threshold += _ppi.crosslinks.Count(a => a.distance <= treashold_angstroms);
+                upper_threshold += _ppi.crosslinks.Count(a => a.distance > treashold_angstroms);
+                sb_distances.Append(String.Join('\n', _ppi.crosslinks.Select(a => a.distance).ToList()));
+            }
+
+            Console.WriteLine($"Total XLs: {valid_PPIs.Sum(a => a.crosslinks.Count)}");
+            Console.WriteLine($"Lower than {treashold_angstroms}A: {lower_threshold}\nUpper than {treashold_angstroms}A: {upper_threshold}");
+
+            File.WriteAllText(distance_file, sb_distances.ToString());
+            Management.CleanTmpFiles();
         }
 
         private static void ProcessHeaderCSV(string row)

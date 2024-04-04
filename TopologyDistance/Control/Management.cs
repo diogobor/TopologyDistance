@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Runtime.CompilerServices;
@@ -13,17 +15,17 @@ namespace TopologyDistance.Control
 {
     public static class Management
     {
-        private static int proteinOffsetInPDBTarget { get; set; }
-        private static int proteinOffsetInPDBSource { get; set; }
-        private static string proteinChain_source;
-        private static bool HasMoreThanOneChain_proteinTarget;
+        private static int REQUEST_TIMEOUT = 10000;
+        private static int proteinOffsetInPDBTarget { get; set; } = -1;
+        private static int proteinOffsetInPDBSource { get; set; } = -1;
         private static string proteinSequenceFromPDBFile_proteinTarget;
-        private static string proteinChain_proteinSource;
         private static bool HasMoreThanOneChain_proteinSource;
         private static string proteinSequenceFromPDBFile_proteinSource;
         private static string pdbFile;
         private static Aligner align = new();
 
+        public static bool HasMoreThanOneChain_proteinTarget;
+        public static string proteinChain_source;
         public static string source_protein_name;
         public static string target_protein_name;
         public static List<Crosslink> crosslinks { get; set; }
@@ -48,7 +50,7 @@ namespace TopologyDistance.Control
                         throw new Exception("ERROR: " + xmlnodes[0].InnerText);
                     }
 
-                    Console.WriteLine("INFO: Getting protein description...");
+                    //Console.WriteLine("INFO: Getting protein description...");
                     xmlnodes = doc.GetElementsByTagName("recommendedName");
                     if (xmlnodes.Count == 0)
                     {
@@ -69,7 +71,7 @@ namespace TopologyDistance.Control
                         }
                     }
 
-                    Console.WriteLine("INFO: Getting gene name...");
+                    //Console.WriteLine("INFO: Getting gene name...");
 
                     xmlnodes = doc.GetElementsByTagName("gene");
                     nodes = xmlnodes[0].ChildNodes;
@@ -86,7 +88,7 @@ namespace TopologyDistance.Control
                         }
                     }
 
-                    Console.WriteLine("INFO: Getting PDB IDs...");
+                    //Console.WriteLine("INFO: Getting PDB IDs...");
 
                     xmlnodes = doc.GetElementsByTagName("dbReference");
                     bool containsPDBtags = false;
@@ -125,7 +127,7 @@ namespace TopologyDistance.Control
                         }
                     }
 
-                    Console.WriteLine("INFO: Getting protein sequence...");
+                    //Console.WriteLine("INFO: Getting protein sequence...");
 
                     xmlnodes = doc.GetElementsByTagName("sequence");
                     string ptnSequence = "";
@@ -167,7 +169,7 @@ namespace TopologyDistance.Control
                 if (isAlphaFold)
                 {
                     // Download file from AlphaFold server
-                    //returnFile = GetPDBfileFromAlphaFoldServer(pdbID, modifyChain);
+                    returnFile = GetPDBfileFromAlphaFoldServer(pdbID, modifyChain);
                 }
                 else
                 {
@@ -182,6 +184,12 @@ namespace TopologyDistance.Control
                         // [PDB or CIF, file content]
                         returnFile = GetPDBorCIFfileFromServer(pdbID);
                     }
+                }
+
+                if (String.IsNullOrEmpty(returnFile[0]))
+                {
+                    Console.WriteLine("ERROR: Unable to retrieve protein structure");
+                    return "";
                 }
                 // write this script to tmp file and return path
                 if (returnFile[0].Equals("PDB"))
@@ -262,11 +270,11 @@ namespace TopologyDistance.Control
                         {
                             chainCols = cols[1].Split("Chains ");
                             chainCols = chainCols[1].Split(',');
-                            chain = chainCols[0].Trim();
+                            chain = chainCols[0][0].ToString();
                         }
                         else
                         {
-                            chain = chainCols[1].Trim();
+                            chain = chainCols[1][0].ToString();
                         }
                         if (proteinOffsetInPDBSource == -1 && fasta.offset != -1)
                             proteinOffsetInPDBSource = fasta.offset;
@@ -293,7 +301,6 @@ namespace TopologyDistance.Control
                     int lastInsertedResidue = 0;
                     int threshold = 10; // qtd aminoacids
                     int countAA = 0;
-                    int proteinOffsetInPDBSource = -1;
                     bool isCompleteFullName = false;
                     StringBuilder sbProteinFullName = new StringBuilder();
                     while ((line = parserFile.ReadLine()) != null)
@@ -310,6 +317,7 @@ namespace TopologyDistance.Control
                                 // Get protein full name
                                 if (cols[2].Equals("MOLECULE:"))
                                 {
+                                    sbProteinFullName.Clear();
                                     for (int i = 3; i < cols.Length; i++)
                                     {
                                         sbProteinFullName.Append(cols[i] + " ");
@@ -322,6 +330,7 @@ namespace TopologyDistance.Control
                                 }
                                 else if (!isCompleteFullName)
                                 {
+                                    sbProteinFullName.Clear();
                                     for (int i = 2; i < cols.Length; i++)
                                     {
                                         sbProteinFullName.Append(cols[i] + " ");
@@ -470,18 +479,24 @@ namespace TopologyDistance.Control
             }
         }
 
-        public static void ProcessPDBFile(
+        //python
+        private static List<string> OutputLog { get; set; } = new();
+        private static List<string> ErrorLog { get; set; } = new();
+        private static EventHandler OnExit { get; set; }
+
+        public static bool ProcessPDBFile(
             string pdbID,
             Protein ptnSource,
             Protein ptnTarget,
             string nodeName,
             bool processTarget,
             string proteinChain_proteinSource,
-            bool useCustomizedPDBFile)
+            bool useCustomizedPDBFile,
+            bool useAlphaFold)
         {
             if (processTarget)
             {
-                Console.WriteLine("INFO: Chain of protein source: " + pdbID);
+                //Console.WriteLine("INFO: Chain of protein source: " + pdbID);
                 proteinChain_source = proteinChain_proteinSource;
                 HasMoreThanOneChain_proteinTarget = false;
                 bool foundChain = true;
@@ -493,12 +508,12 @@ namespace TopologyDistance.Control
                     string[] returnPDB_proteinTarget = null;
                     if (pdbFile.EndsWith("pdb"))
                     {
-                        Console.WriteLine("INFO: Getting protein sequence and chain of protein source from PDB file...");
+                        //Console.WriteLine("INFO: Getting protein sequence and chain of protein source from PDB file...");
                         returnPDB_proteinTarget = GetProteinSequenceAndChainFromPDBFile(pdbFile, ptnTarget);
                     }
                     else
                     {
-                        Console.WriteLine("INFO: Getting all chains of protein source from CIF file...");
+                        //Console.WriteLine("INFO: Getting all chains of protein source from CIF file...");
                         returnPDB_proteinTarget = GetChainFromCIFFile(pdbFile);
                     }
                     proteinSequenceFromPDBFile_proteinTarget = returnPDB_proteinTarget[0];
@@ -506,7 +521,7 @@ namespace TopologyDistance.Control
                     proteinChain_proteinTarget = returnPDB_proteinTarget[1];
                     if (proteinChain_proteinTarget.StartsWith("CHAINS:"))
                     {
-                        Console.WriteLine("WARN: No chain matched with protein target description.");
+                        //Console.WriteLine("WARN: No chain matched with protein target description.");
                         string[] protein_chains = returnPDB_proteinTarget[1].Replace("CHAINS:", "").Split('#');
                         List<PDB> PDBchains = new List<PDB>();
                         foreach (string chainStr in protein_chains)
@@ -515,33 +530,32 @@ namespace TopologyDistance.Control
                         }
                         if (PDBchains.Count > 1)
                         {
-                            Console.WriteLine("INFO: There is more than one chain. The first one was selected...");
+                            //Console.WriteLine("INFO: There is more than one chain. The first one was selected...");
                             // Open a window to select only one chain
-                            //SingleNodeTask.GetPDBInformation(PDBchains, "", taskMonitor, ptnSource, ptnTarget, false, pdbFile, HasMoreThanOneChain_proteinTarget, true, target_node_name, true);
-                            ProcessPDBorCIFfileWithSpecificChain(ptnSource, ptnTarget, PDBchains[0].chain, pdbFile, pdbFile);
+                            return ProcessPDBorCIFfileWithSpecificChain(ptnSource, ptnTarget, PDBchains[0].chain, pdbFile, pdbFile, useAlphaFold);
                         }
                     }
                     else
                     {
-                        ProcessPDBorCIFfileWithSpecificChain(ptnSource, ptnTarget, returnPDB_proteinTarget[1], pdbFile, pdbFile);
+                        return ProcessPDBorCIFfileWithSpecificChain(ptnSource, ptnTarget, returnPDB_proteinTarget[1], pdbFile, pdbFile, useAlphaFold);
                     }
                 }
                 else
                 {
-                    ProcessPDBorCIFfileWithSpecificChain(ptnSource, ptnTarget, proteinChain_proteinTarget, pdbFile, pdbFile);
+                    return ProcessPDBorCIFfileWithSpecificChain(ptnSource, ptnTarget, proteinChain_proteinTarget, pdbFile, pdbFile, useAlphaFold);
                 }
             }
             else
             {
-                Console.WriteLine("INFO: Creating tmp PDB file...");
+                //Console.WriteLine("INFO: Creating tmp PDB file...");
                 if (!useCustomizedPDBFile)
                 {
-                    pdbFile = CreatePDBFile(pdbID, false, false);
+                    pdbFile = CreatePDBFile(pdbID, useAlphaFold, false);
                 }
                 if (string.IsNullOrWhiteSpace(pdbFile) || pdbFile.Equals("ERROR"))
                 {
                     Console.WriteLine("ERROR: Error creating PDB file.");
-                    return;
+                    return false;
                 }
                 HasMoreThanOneChain_proteinSource = false;
                 bool foundChain = true;
@@ -553,12 +567,12 @@ namespace TopologyDistance.Control
                     string[] returnPDB_proteinSource = null;
                     if (!string.IsNullOrWhiteSpace(pdbFile) && pdbFile.EndsWith("pdb"))
                     {
-                        Console.WriteLine("INFO: Getting protein sequence and chain of protein source from PDB file...");
+                        //Console.WriteLine("INFO: Getting protein sequence and chain of protein source from PDB file...");
                         returnPDB_proteinSource = GetProteinSequenceAndChainFromPDBFile(pdbFile, ptnSource);
                     }
                     else
                     {
-                        Console.WriteLine("INFO: Getting all chains of protein source from CIF file...");
+                        //Console.WriteLine("INFO: Getting all chains of protein source from CIF file...");
                         returnPDB_proteinSource = GetChainFromCIFFile(pdbFile);
                     }
                     proteinSequenceFromPDBFile_proteinSource = returnPDB_proteinSource[0];
@@ -566,7 +580,7 @@ namespace TopologyDistance.Control
                     proteinChain_proteinSource = returnPDB_proteinSource[1];
                     if (proteinChain_proteinSource.StartsWith("CHAINS:"))
                     {
-                        Console.WriteLine("WARN: No chain matched with protein source description.");
+                        //Console.WriteLine("WARN: No chain matched with protein source description.");
                         string[] protein_chains = returnPDB_proteinSource[1].Replace("CHAINS:", "").Split('#');
                         List<PDB> PDBchains = new List<PDB>();
                         foreach (string chainStr in protein_chains)
@@ -575,21 +589,22 @@ namespace TopologyDistance.Control
                         }
                         if (PDBchains.Count > 1)
                         {
-                            Console.WriteLine("INFO: There is more than one chain. Select first one was selected...");
+                            //Console.WriteLine("INFO: There is more than one chain. Select first one was selected...");
                             // Open a window to select only one chain
-                            ProcessPDBFile(pdbID, ptnSource, ptnTarget, nodeName, true, PDBchains[0].chain, useCustomizedPDBFile);
+                            ProcessPDBFile(pdbID, ptnSource, ptnTarget, nodeName, true, PDBchains[0].chain, useCustomizedPDBFile, useAlphaFold);
                         }
                     }
                     else
                     {
-                        ProcessPDBFile(pdbID, ptnSource, ptnTarget, nodeName, true, proteinChain_proteinSource, useCustomizedPDBFile);
+                        ProcessPDBFile(pdbID, ptnSource, ptnTarget, nodeName, true, proteinChain_proteinSource, useCustomizedPDBFile, useAlphaFold);
                     }
                 }
                 else
                 {
-                    ProcessPDBFile(pdbID, ptnSource, ptnTarget, nodeName, true, proteinChain_proteinSource, useCustomizedPDBFile);
+                    ProcessPDBFile(pdbID, ptnSource, ptnTarget, nodeName, true, proteinChain_proteinSource, useCustomizedPDBFile, useAlphaFold);
                 }
             }
+            return true;
         }
 
         public static string GetProteinSequenceFromPDBFileWithSpecificChain(
@@ -599,6 +614,7 @@ namespace TopologyDistance.Control
         {
             var ResiduesDict = CreateResiduesDict();
             var sbSequence = new StringBuilder();
+            int proteinOffsetInPDB = -1;
 
             try
             {
@@ -609,7 +625,6 @@ namespace TopologyDistance.Control
                     int threshold = 15; // Number of amino acids
                     int countAA = 0;
                     bool getSequence = true;
-                    proteinOffsetInPDBSource = -1;
 
                     while ((line = parserFile.ReadLine()) != null)
                     {
@@ -640,9 +655,9 @@ namespace TopologyDistance.Control
                                 }
                             }
                             lastOffset = currentOffset;
-                            if (proteinOffsetInPDBSource == -1)
+                            if (proteinOffsetInPDB == -1)
                             {
-                                proteinOffsetInPDBSource = int.Parse(cols[5]);
+                                proteinOffsetInPDB = int.Parse(cols[5]);
                             }
                         }
                     }
@@ -652,11 +667,11 @@ namespace TopologyDistance.Control
             {
                 Console.WriteLine("ERROR: Problems while reading PDB file: " + fileName);
             }
-            proteinOffsetInPDBTarget = proteinOffsetInPDBSource;
+
             if (isProteinSource)
-                proteinOffsetInPDBSource = -1;
+                proteinOffsetInPDBSource = proteinOffsetInPDB;
             else
-                proteinOffsetInPDBTarget = -1;
+                proteinOffsetInPDBTarget = proteinOffsetInPDB;
 
             return sbSequence.ToString();
         }
@@ -668,6 +683,8 @@ namespace TopologyDistance.Control
         {
             var ResiduesDict = CreateResiduesDict();
             var sbSequence = new StringBuilder();
+            int proteinOffsetInPDB = -1;
+
             try
             {
                 using (StreamReader parserFile = new StreamReader(fileName))
@@ -677,7 +694,6 @@ namespace TopologyDistance.Control
                     int threshold = 15; // Number of amino acids
                     int countAA = 0;
                     bool getSequence = true;
-                    proteinOffsetInPDBSource = -1;
 
                     while ((line = parserFile.ReadLine()) != null)
                     {
@@ -710,9 +726,9 @@ namespace TopologyDistance.Control
                                 }
                             }
                             lastOffset = currentOffset;
-                            if (proteinOffsetInPDBSource == -1)
+                            if (proteinOffsetInPDB == -1)
                             {
-                                proteinOffsetInPDBSource = int.Parse(cols[7]);
+                                proteinOffsetInPDB = int.Parse(cols[7]);
                             }
                         }
                     }
@@ -722,43 +738,52 @@ namespace TopologyDistance.Control
             {
                 Console.WriteLine("ERROR: Problems while reading PDB file: " + fileName);
             }
+
+            proteinOffsetInPDBSource = -1;
+            proteinOffsetInPDBTarget = -1;
+            if (isProteinSource)
+                proteinOffsetInPDBSource = proteinOffsetInPDB;
+            else
+                proteinOffsetInPDBTarget = proteinOffsetInPDB;
+
             return sbSequence.ToString();
         }
 
-        public static void ProcessPDBorCIFfileWithSpecificChain(
+        public static bool ProcessPDBorCIFfileWithSpecificChain(
             Protein ptnSource,
             Protein ptnTarget,
             string proteinChain_target,
             string pdbFile_source,
-            string pdbFile_target)
+            string pdbFile_target,
+            bool useAlphaFold)
         {
-            Console.WriteLine("INFO: Chain of protein target: " + proteinChain_target);
-            Console.WriteLine("INFO: Getting sequence of protein source: " + source_protein_name);
+            //Console.WriteLine("INFO: Chain of protein target: " + proteinChain_target);
+            //Console.WriteLine("INFO: Getting sequence of protein source: " + source_protein_name);
 
             string proteinSequence_source_FromPDBFile = "";
             if (pdbFile_source.EndsWith("pdb"))
-                proteinSequence_source_FromPDBFile = GetProteinSequenceFromPDBFileWithSpecificChain(pdbFile_source, proteinChain_source, false);
+                proteinSequence_source_FromPDBFile = GetProteinSequenceFromPDBFileWithSpecificChain(pdbFile_source, proteinChain_source, true);
             else
-                proteinSequence_source_FromPDBFile = GetProteinSequenceFromCIFFileWithSpecificChain(pdbFile_source, proteinChain_source, false);
+                proteinSequence_source_FromPDBFile = GetProteinSequenceFromCIFFileWithSpecificChain(pdbFile_source, proteinChain_source, true);
 
             if (string.IsNullOrEmpty(proteinSequence_source_FromPDBFile))
             {
                 Console.WriteLine("ERROR: No sequence has been found in pdb/cif file for: " + source_protein_name);
-                throw new Exception("No sequence has been found in pdb/cif file for: " + source_protein_name);
+                return false;
             }
 
-            Console.WriteLine("INFO: Getting sequence of protein target: " + target_protein_name);
+            //Console.WriteLine("INFO: Getting sequence of protein target: " + target_protein_name);
 
             string proteinSequence_target_FromPDBFile = "";
             if (pdbFile_target.EndsWith("pdb"))
-                proteinSequence_target_FromPDBFile = GetProteinSequenceFromPDBFileWithSpecificChain(pdbFile_target, proteinChain_target, true);
+                proteinSequence_target_FromPDBFile = GetProteinSequenceFromPDBFileWithSpecificChain(pdbFile_target, proteinChain_target, false);
             else
-                proteinSequence_target_FromPDBFile = GetProteinSequenceFromCIFFileWithSpecificChain(pdbFile_target, proteinChain_target, true);
+                proteinSequence_target_FromPDBFile = GetProteinSequenceFromCIFFileWithSpecificChain(pdbFile_target, proteinChain_target, false);
 
             if (string.IsNullOrEmpty(proteinSequence_target_FromPDBFile))
             {
                 Console.WriteLine("ERROR: No sequence has been found in pdb/cif file for: " + target_protein_name);
-                throw new Exception("No sequence has been found in pdb/cif file for: " + target_protein_name);
+                return false;
             }
 
             // Filter cross-links to obtain only links that belong to source and target nodes
@@ -778,14 +803,154 @@ namespace TopologyDistance.Control
                 proteinChain_source,
                 proteinChain_target,
                 source_protein_name,
-                target_protein_name);
+                target_protein_name,
+                useAlphaFold);
 
             if (tmpPyMOLScriptFile.Equals("ERROR"))
             {
                 Console.WriteLine("ERROR: Error creating PyMOL script file.");
                 throw new Exception("Error creating PyMOL script file.");
             }
-            //ExecutePyMOL(taskMonitor, tmpPyMOLScriptFile, null);
+
+            ExecutePyMOL(tmpPyMOLScriptFile);
+
+            if ((OutputLog.FindIndex(a => a.StartsWith("ERROR: There is no")) != -1) ||
+                ErrorLog.Count > 0) return false;
+            string outputfile = OutputLog.Find(a => a.StartsWith("[[")).Trim();
+
+            //Manage outputfile distances
+            ManageXLDistances(outputfile);
+
+            return true;
+        }
+
+        public static bool CleanTmpFiles()
+        {
+            try
+            {
+                DirectoryInfo dr = new DirectoryInfo(Path.GetTempPath() + "\\cytoTmpScripts");
+                if (dr.Exists)
+                {
+                    string directoryPath = dr.FullName;
+
+                    // Delete *.py files
+                    DeleteFiles(directoryPath, "*.py");
+                    // Delete *.pml files
+                    DeleteFiles(directoryPath, "*.pml");
+                    // Delete *.pdb files
+                    DeleteFiles(directoryPath, "*.pdb");
+                    // Delete *.cif files
+                    DeleteFiles(directoryPath, "*.cif");
+                }
+                return true;
+            }
+            catch (Exception)
+            {
+                Console.WriteLine("ERROR: Unable to delete files.");
+                return false;
+            }
+        }
+        internal static void DeleteFiles(string directoryPath, string searchPattern)
+        {
+            try
+            {
+                // Get files matching the search pattern
+                string[] files = Directory.GetFiles(directoryPath, searchPattern);
+                // Delete each file
+                foreach (string file in files)
+                    File.Delete(file);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"An error occurred: {ex.Message}");
+            }
+        }
+
+        internal static void ExecutePyMOL(string script_file)
+        {
+            OutputLog.Clear();
+            ErrorLog.Clear();
+
+            Process proc = new Process();
+            proc.StartInfo.FileName = @"C:\ProgramData\pymol\python.exe";
+            proc.StartInfo.RedirectStandardOutput = true;
+            proc.StartInfo.RedirectStandardError = true;
+            proc.StartInfo.UseShellExecute = false;
+            proc.StartInfo.CreateNoWindow = true;
+            proc.StartInfo.Arguments = script_file.Trim();
+            proc.StartInfo.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
+
+            proc.OutputDataReceived += UpdateOutputLog;
+            proc.ErrorDataReceived += UpdateErrorLog;
+
+            proc.OutputDataReceived += PrintToConsoleEvent;
+            proc.ErrorDataReceived += PrintToConsoleEvent;
+            proc.Exited += OnExit;
+
+            proc.Start();
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+            proc.WaitForExit();
+        }
+
+        internal static void UpdateOutputLog(object sender, DataReceivedEventArgs e)
+        {
+            if (e.Data != null)
+            {
+                OutputLog.Add(e.Data);
+            }
+        }
+
+        internal static void UpdateErrorLog(object sender, DataReceivedEventArgs e)
+        {
+            if (e.Data != null)
+            {
+                ErrorLog.Add(e.Data);
+            }
+        }
+
+        internal static void PrintToConsoleEvent(object sender, DataReceivedEventArgs e)
+        {
+            if (e.Data != null)
+                Console.WriteLine(e.Data);
+        }
+
+        internal static void ManageXLDistances(string distances)
+        {
+            // Read the text from the file
+            //string text = File.ReadAllText(distances);
+
+            // Parse the text into a list of tuples
+            List<(int, double)> dataList = ParseData(distances);
+
+            if (crosslinks.Count != dataList.Count)
+            {
+                Console.WriteLine("ERROR: Crosslink and dataList size are different.");
+                return;
+            }
+            for (int i = 0; i < crosslinks.Count; i++)
+            {
+                Crosslink current_xl = crosslinks[i];
+                current_xl.distance = dataList[i].Item2;
+            }
+
+            //File.Delete(distances);
+        }
+        internal static List<(int, double)> ParseData(string text)
+        {
+            List<(int, double)> dataList = new();
+
+            var matches = Regex.Matches(text, "(\\[xl)(\\d+)(, )(\\d+.\\d+)(\\])");
+            if (matches != null)
+            {
+                foreach (Match match in matches)
+                {
+                    GroupCollection gc = match.Groups;
+                    dataList.Add((Convert.ToInt32(gc[2].Value), Convert.ToDouble(gc[4].Value)));
+                }
+            }
+
+            return dataList;
         }
         internal static string CreatePyMOLScriptFile(
             Protein ptnSource,
@@ -800,14 +965,16 @@ namespace TopologyDistance.Control
             string proteinChain_source,
             string proteinChain_target,
             string nodeName_source,
-            string nodeName_target)
+            string nodeName_target,
+            bool useAlphaFold)
         {
             string finalStr = "";
             FileInfo filePath = null;
             try
             {
                 // Write this script to tmp file and return path
-                filePath = GetTmpFile(ptnSource.proteinID + "_" + ptnTarget.proteinID, "pml");
+                filePath = GetTmpFile(ptnSource.proteinID + "_" + ptnTarget.proteinID, "py");
+                //filePath = GetTmpFile(ptnSource.proteinID + "_" + ptnTarget.proteinID, "pml");
 
                 if (filePath == null)
                 {
@@ -823,7 +990,8 @@ namespace TopologyDistance.Control
                 }
                 using (StreamWriter bw = new StreamWriter(filePath.FullName))
                 {
-                    finalStr = CreatePyMOLScript(
+                    finalStr = CreatePythonScript(
+                    //finalStr = CreatePyMOLScript(
                         ptnSource,
                         ptnTarget,
                         crossLinks,
@@ -836,7 +1004,8 @@ namespace TopologyDistance.Control
                         proteinSequence_source_FromPDBFile,
                         proteinSequence_target_FromPDBFile,
                         nodeName_source,
-                        nodeName_target);
+                        nodeName_target,
+                        useAlphaFold);
 
                     if (string.IsNullOrWhiteSpace(finalStr))
                         Console.WriteLine("ERROR: Error retrieving the PDB file for protein " + ptnSource.proteinID + ".");
@@ -854,7 +1023,7 @@ namespace TopologyDistance.Control
 
             return filePath.FullName;
         }
-        internal static string CreatePyMOLScript(
+        internal static string CreatePythonScript(
             Protein ptnSource,
             Protein ptnTarget,
             List<Crosslink> crossLinks,
@@ -867,40 +1036,47 @@ namespace TopologyDistance.Control
             string proteinSequence_source_FromPDBFile,
             string proteinSequence_target_FromPDBFile,
             string nodeName_source,
-            string nodeName_target)
+            string nodeName_target,
+            bool useAlphaFold)
         {
-            Console.WriteLine("INFO: Getting PDB file name...");
+            //Console.WriteLine("INFO: Getting PDB file name...");
 
             string[] pdbFilePathName_source = GetPDBFilePathName(pdbFile_source);
             string[] pdbFilePathName_target = !pdbFile_source.Equals(pdbFile_target) ? GetPDBFilePathName(pdbFile_target) : null;
             var sbScript = new StringBuilder();
-            sbScript.Append("cd ").AppendLine(pdbFilePathName_source[0]);
-            sbScript.Append("load ").AppendLine(pdbFilePathName_source[1]);
+            //sbScript.Append("cd ").AppendLine(pdbFilePathName_source[0]);
+            //sbScript.Append("load ").AppendLine(pdbFilePathName_source[1]);
 
-            if (!pdbFile_source.Equals(pdbFile_target))
-                sbScript.Append("load ").AppendLine(pdbFilePathName_target[1]);
-            sbScript.AppendLine("set ignore_case, 0");
-            sbScript.AppendLine($"select chain_{proteinChain_source}, chain {proteinChain_source}");
-            sbScript.AppendLine($"select chain_{proteinChain_target}, chain {proteinChain_target}");
-            sbScript.AppendLine("hide all");
+            //if (!pdbFile_source.Equals(pdbFile_target))
+            //    sbScript.Append("load ").AppendLine(pdbFilePathName_target[1]);
+            //sbScript.AppendLine("set ignore_case, 0");
+            //sbScript.AppendLine($"select chain_{proteinChain_source}, chain {proteinChain_source}");
+            //sbScript.AppendLine($"select chain_{proteinChain_target}, chain {proteinChain_target}");
+            //sbScript.AppendLine("hide all");
 
-            Console.WriteLine("INFO: Computing protein offset...");
+            //Console.WriteLine("INFO: Computing protein offset...");
 
-            int offsetProteinSource = ptnSource.fasta.sequence.IndexOf(proteinSequence_source_FromPDBFile);
-            offsetProteinSource = offsetProteinSource > -1 ? offsetProteinSource : 0;
+            int offsetProteinSource = proteinOffsetInPDBSource;
+            if (useAlphaFold)
+                offsetProteinSource = 0;
+            //int offsetProteinSource = ptnSource.fasta.sequence.IndexOf(proteinSequence_source_FromPDBFile);
+            //offsetProteinSource = offsetProteinSource > -1 ? offsetProteinSource : 0;
             string selectedResidueItem = "CA";
 
-            if ((proteinOffsetInPDBSource - 1) == offsetProteinSource)
-                offsetProteinSource = 0;
-            else if (offsetProteinSource > 0)
-                offsetProteinSource = (proteinOffsetInPDBSource - 1) - offsetProteinSource;
+            //if ((proteinOffsetInPDBSource - 1) == offsetProteinSource)
+            //    offsetProteinSource = 0;
+            //else if (offsetProteinSource > 0)
+            //    offsetProteinSource = (proteinOffsetInPDBSource - 1) - offsetProteinSource;
 
-            int offsetProteinTarget = ptnTarget.fasta.sequence.IndexOf(proteinSequence_target_FromPDBFile);
-            offsetProteinTarget = offsetProteinTarget > -1 ? offsetProteinTarget : 0;
-            if ((proteinOffsetInPDBTarget - 1) == offsetProteinTarget)
+            int offsetProteinTarget = proteinOffsetInPDBTarget;
+            if (useAlphaFold)
                 offsetProteinTarget = 0;
-            else if (offsetProteinTarget > 0)
-                offsetProteinTarget = (proteinOffsetInPDBTarget - 1) - offsetProteinTarget;
+            //int offsetProteinTarget = ptnTarget.fasta.sequence.IndexOf(proteinSequence_target_FromPDBFile);
+            //offsetProteinTarget = offsetProteinTarget > -1 ? offsetProteinTarget : 0;
+            //if ((proteinOffsetInPDBTarget - 1) == offsetProteinTarget)
+            //    offsetProteinTarget = 0;
+            //else if (offsetProteinTarget > 0)
+            //    offsetProteinTarget = (proteinOffsetInPDBTarget - 1) - offsetProteinTarget;
 
             var sbDistances = new StringBuilder();
             var sbPositions = new StringBuilder();
@@ -940,8 +1116,151 @@ namespace TopologyDistance.Control
                 sbPositions.AppendLine($"{chain_b}/{pos2}");
             }
 
-            var distancesList = new HashSet<string>(sbDistances.ToString().Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries));
-            var positionList = new HashSet<string>(sbPositions.ToString().Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries));
+            var distancesList = new HashSet<string>(sbDistances.ToString().Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries));
+            //var positionList = new HashSet<string>(sbPositions.ToString().Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries));
+            int countXL = 1;
+
+            //foreach (var dist in distancesList)
+            //{
+            //    sbScript.AppendLine($"distance xl{countXL}, {dist}");
+            //    countXL++;
+            //}
+
+            //sbScript.AppendLine($"select a, res {string.Join("+", positionList)};");
+            //sbScript.AppendLine("set dash_width, 5");
+            //sbScript.AppendLine("set dash_length, 0.1");
+            //sbScript.AppendLine("set dash_color, [1.000, 1.000, 0.000]");
+            //sbScript.AppendLine("hide label");
+            //sbScript.AppendLine("deselect");
+            //sbScript.AppendLine("show sticks, a");
+            //sbScript.AppendLine($"show cartoon, chain_{proteinChain_source}");
+            //sbScript.AppendLine($"color green, chain {proteinChain_source}");
+            //sbScript.AppendLine($"show cartoon, chain_{proteinChain_target}");
+            //sbScript.AppendLine($"color red, chain {proteinChain_target}");
+            //sbScript.AppendLine($"orient chain_{proteinChain_source} chain_{proteinChain_target}");
+            //sbScript.AppendLine("deselect");
+
+            sbScript.AppendLine("from pymol import cmd");
+            sbScript.AppendLine($"cmd.load(r\"{pdbFile_source}\")");
+            if (!pdbFile_source.Equals(pdbFile_target))
+                sbScript.AppendLine($"cmd.load(r\"{pdbFile_target}\")");
+            sbScript.AppendLine("_list = []");
+
+            //countXL = 1;
+
+            foreach (var dist in distancesList)
+            {
+                string[] cols_dist = Regex.Split(dist, ",");
+                sbScript.AppendLine($"_list.append([\"xl{countXL}\", cmd.distance(\"xl{countXL}\", \"{cols_dist[0]}\", \"{cols_dist[1]}\")])");
+                countXL++;
+            }
+            sbScript.AppendLine("list_string = \"[\" + \", \".join([f\"[{item[0]}, {item[1]}]\" for item in _list]) + \"]\"");
+            sbScript.AppendLine("print(list_string)");
+
+            //DirectoryInfo dr = new DirectoryInfo(Path.GetTempPath() + "\\cytoTmpScripts");
+            //string prefix = ptnSource.proteinID + "_" + ptnTarget.proteinID;
+            //outputfile = Path.Combine(dr.FullName, $"{prefix}_scr_{Guid.NewGuid()}_distances_output.txt");
+
+            //sbScript.AppendLine($"with open('{outputfile}', 'w') as f: f.write(list_string)");
+
+            return sbScript.ToString();
+        }
+
+        internal static string CreatePyMOLScript(
+            Protein ptnSource,
+            Protein ptnTarget,
+            List<Crosslink> crossLinks,
+            string pdbFile_source,
+            string pdbFile_target,
+            bool HasMoreThanOneChain_proteinSource,
+            bool HasMoreThanOneChain_proteinTarget,
+            string proteinChain_source,
+            string proteinChain_target,
+            string proteinSequence_source_FromPDBFile,
+            string proteinSequence_target_FromPDBFile,
+            string nodeName_source,
+            string nodeName_target,
+            bool useAlphaFold)
+        {
+            //Console.WriteLine("INFO: Getting PDB file name...");
+
+            string[] pdbFilePathName_source = GetPDBFilePathName(pdbFile_source);
+            string[] pdbFilePathName_target = !pdbFile_source.Equals(pdbFile_target) ? GetPDBFilePathName(pdbFile_target) : null;
+            var sbScript = new StringBuilder();
+            sbScript.Append("cd ").AppendLine(pdbFilePathName_source[0]);
+            sbScript.Append("load ").AppendLine(pdbFilePathName_source[1]);
+
+            if (!pdbFile_source.Equals(pdbFile_target))
+                sbScript.Append("load ").AppendLine(pdbFilePathName_target[1]);
+            sbScript.AppendLine("set ignore_case, 0");
+            sbScript.AppendLine($"select chain_{proteinChain_source}, chain {proteinChain_source}");
+            sbScript.AppendLine($"select chain_{proteinChain_target}, chain {proteinChain_target}");
+            sbScript.AppendLine("hide all");
+
+            //Console.WriteLine("INFO: Computing protein offset...");
+
+            int offsetProteinSource = proteinOffsetInPDBSource;
+            if (useAlphaFold)
+                offsetProteinSource = 0;
+            //int offsetProteinSource = ptnSource.fasta.sequence.IndexOf(proteinSequence_source_FromPDBFile);
+            //offsetProteinSource = offsetProteinSource > -1 ? offsetProteinSource : 0;
+            string selectedResidueItem = "CA";
+
+            //if ((proteinOffsetInPDBSource - 1) == offsetProteinSource)
+            //    offsetProteinSource = 0;
+            //else if (offsetProteinSource > 0)
+            //    offsetProteinSource = (proteinOffsetInPDBSource - 1) - offsetProteinSource;
+
+            int offsetProteinTarget = proteinOffsetInPDBTarget;
+            if (useAlphaFold)
+                offsetProteinTarget = 0;
+            //int offsetProteinTarget = ptnTarget.fasta.sequence.IndexOf(proteinSequence_target_FromPDBFile);
+            //offsetProteinTarget = offsetProteinTarget > -1 ? offsetProteinTarget : 0;
+            //if ((proteinOffsetInPDBTarget - 1) == offsetProteinTarget)
+            //    offsetProteinTarget = 0;
+            //else if (offsetProteinTarget > 0)
+            //    offsetProteinTarget = (proteinOffsetInPDBTarget - 1) - offsetProteinTarget;
+
+            var sbDistances = new StringBuilder();
+            var sbPositions = new StringBuilder();
+            int offset_a = -1;
+            int offset_b = -1;
+            int pos1 = -1;
+            int pos2 = -1;
+
+            foreach (var crossLink in crossLinks)
+            {
+                string chain_a = "";
+                string chain_b = "";
+                if (crossLink.sourceAccessionNumberProtein.Equals(nodeName_source))
+                {
+                    chain_a = proteinChain_source;
+                    offset_a = offsetProteinSource;
+                }
+                else
+                {
+                    chain_a = proteinChain_target;
+                    offset_a = offsetProteinTarget;
+                }
+                if (crossLink.targetAccessionNumberProtein.Equals(nodeName_target))
+                {
+                    chain_b = proteinChain_target;
+                    offset_b = offsetProteinTarget;
+                }
+                else
+                {
+                    chain_b = proteinChain_source;
+                    offset_b = offsetProteinSource;
+                }
+                pos1 = crossLink.sourcePosition + offset_a;
+                pos2 = crossLink.targetPosition + offset_b;
+                sbDistances.AppendLine($"{chain_a}/{pos1}/{selectedResidueItem}, {chain_b}/{pos2}/{selectedResidueItem}");
+                sbPositions.AppendLine($"{chain_a}/{pos1}");
+                sbPositions.AppendLine($"{chain_b}/{pos2}");
+            }
+
+            var distancesList = new HashSet<string>(sbDistances.ToString().Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries));
+            var positionList = new HashSet<string>(sbPositions.ToString().Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries));
             int countXL = 1;
 
             foreach (var dist in distancesList)
@@ -966,7 +1285,6 @@ namespace TopologyDistance.Control
 
             return sbScript.ToString();
         }
-
         private static string[] GetPDBFilePathName(string pdbFile)
         {
             string separator = Path.DirectorySeparatorChar.ToString();
@@ -990,8 +1308,8 @@ namespace TopologyDistance.Control
             string _url = "https://www.uniprot.org/uniprot/" + proteinID + ".xml";
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(_url);
             request.Method = "GET";
-            request.Timeout = 300;
-            request.ReadWriteTimeout = 300;
+            request.Timeout = REQUEST_TIMEOUT;
+            request.ReadWriteTimeout = REQUEST_TIMEOUT;
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             {
                 if (response.StatusCode == HttpStatusCode.OK)
@@ -1031,7 +1349,7 @@ namespace TopologyDistance.Control
                 string _url = "https://files.rcsb.org/view/" + pdbID + ".pdb";
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(_url);
                 request.Method = "GET";
-                request.Timeout = 1000;
+                request.Timeout = REQUEST_TIMEOUT;
                 using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
                 {
                     if (response.StatusCode == HttpStatusCode.OK)
@@ -1055,7 +1373,10 @@ namespace TopologyDistance.Control
                                     if (newProgress > oldProgress)
                                     {
                                         oldProgress = newProgress;
-                                        Console.WriteLine("INFO: Downloading PDB file from server: " + oldProgress + "%");
+                                        int currentLineCursor = Console.CursorTop;
+                                        Console.SetCursorPosition(0, Console.CursorTop);
+                                        Console.Write("INFO: Downloading PDB file from server: " + oldProgress + "%");
+                                        Console.SetCursorPosition(0, currentLineCursor);
                                     }
                                 }
                                 return new string[] { "PDB", responseBody.ToString() };
@@ -1091,7 +1412,7 @@ namespace TopologyDistance.Control
                 string _url = "https://files.rcsb.org/view/" + pdbID + ".cif";
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(_url);
                 request.Method = "GET";
-                request.Timeout = 1000;
+                request.Timeout = REQUEST_TIMEOUT;
                 using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
                 {
                     if (response.StatusCode == HttpStatusCode.OK)
@@ -1115,7 +1436,10 @@ namespace TopologyDistance.Control
                                     if (newProgress > oldProgress)
                                     {
                                         oldProgress = newProgress;
-                                        Console.WriteLine("INFO: Downloading CIF file from server: " + oldProgress + "%");
+                                        int currentLineCursor = Console.CursorTop;
+                                        Console.SetCursorPosition(0, Console.CursorTop);
+                                        Console.Write("INFO: Downloading PDB file from server: " + oldProgress + "%");
+                                        Console.SetCursorPosition(0, currentLineCursor);
                                     }
                                 }
                                 return responseBody.ToString();
@@ -1147,7 +1471,7 @@ namespace TopologyDistance.Control
                 request.Accept = "text/html";
                 request.Headers["Accept-Language"] = "en-US";
                 request.Headers["Connection"] = "close";
-                request.Timeout = 1000;
+                request.Timeout = REQUEST_TIMEOUT;
                 using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
                 {
                     if (response.StatusCode == HttpStatusCode.OK)
@@ -1171,7 +1495,10 @@ namespace TopologyDistance.Control
                                     if (newProgress > oldProgress)
                                     {
                                         oldProgress = newProgress;
-                                        Console.WriteLine("INFO: Downloading PDB file from server: " + oldProgress + "%");
+                                        int currentLineCursor = Console.CursorTop;
+                                        Console.SetCursorPosition(0, Console.CursorTop);
+                                        Console.Write("INFO: Downloading PDB file from server: " + oldProgress + "%");
+                                        Console.SetCursorPosition(0, currentLineCursor);
                                     }
                                 }
                                 return new string[] { "PDB", responseBody.ToString() };
@@ -1195,6 +1522,64 @@ namespace TopologyDistance.Control
             }
         }
 
+        internal static string[] GetPDBfileFromAlphaFoldServer(string pdbID, bool modifyChain)
+        {
+            try
+            {
+                string _url = "https://alphafold.ebi.ac.uk/files/AF-" + pdbID + "-F1-model_v2.pdb";
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(_url);
+                request.Method = "GET";
+                request.Accept = "text/html";
+                request.Headers["Accept-Language"] = "en-US";
+                request.Headers["Connection"] = "close";
+                request.Timeout = REQUEST_TIMEOUT;
+                request.ReadWriteTimeout = REQUEST_TIMEOUT;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream stream = response.GetResponseStream())
+                using (StreamReader reader = new StreamReader(stream))
+                {
+                    if (response.StatusCode == HttpStatusCode.OK)
+                    {
+                        string line;
+                        StringBuilder responseBuilder = new StringBuilder();
+                        int totalLines = (int)response.ContentLength;
+                        int oldProgress = 0;
+                        int summaryProcessed = 0;
+                        while ((line = reader.ReadLine()) != null)
+                        {
+                            responseBuilder.AppendLine(line);
+                            summaryProcessed += line.Length + 1;
+                            int newProgress = (int)((double)summaryProcessed / totalLines * 100);
+                            if (newProgress > oldProgress)
+                            {
+                                oldProgress = newProgress;
+                                int currentLineCursor = Console.CursorTop;
+                                Console.SetCursorPosition(0, Console.CursorTop);
+                                Console.Write("INFO: Downloading PDB file from server: " + oldProgress + "%");
+                                Console.SetCursorPosition(0, currentLineCursor);
+                            }
+                        }
+                        string finalResponse = responseBuilder.ToString();
+                        if (modifyChain)
+                        {
+                            finalResponse = finalResponse.Replace(" A ", " B ");
+                        }
+                        return new string[] { "PDB", finalResponse };
+                    }
+                    else
+                    {
+                        Console.WriteLine($"INFO: There is no PDB for this ID: {pdbID}.");
+                        return new string[] { "" };
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine("ERROR: " + e.Message);
+                return new string[] { "" };
+            }
+        }
+
         internal static List<FastaItem> GetProteinSequenceFromPDBServer(string pdbID)
         {
             List<FastaItem> fastaList = new();
@@ -1206,7 +1591,7 @@ namespace TopologyDistance.Control
                 request.Accept = "text/html";
                 request.Headers["Accept-Language"] = "en-US";
                 request.Headers["Connection"] = "close";
-                request.Timeout = 1000;
+                request.Timeout = REQUEST_TIMEOUT;
                 using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
                 using (Stream inputStream = response.GetResponseStream())
                 using (StreamReader rd = new StreamReader(inputStream))

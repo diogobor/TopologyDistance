@@ -11,7 +11,7 @@ namespace TopologyDistance.Model
         public string accessionNumber { get; set; }
         public string sequence { get; set; }
         public int length { get; set; }
-        public int offset { get; set; }
+        public int offset { get; set; } = -1;
 
         public FastaItem(string accessionNumber, string sequence, int length, int offset) : this(accessionNumber, sequence, length)
         {

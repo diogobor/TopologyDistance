@@ -15,6 +15,7 @@ namespace TopologyDistance.Model
         public int sourcePosition { get; set; }
         public int targetPosition { get; set; }
         public double score { get; set; }
+        public double distance { get; set; }
 
         public Crosslink(string sourceGene, string targetGene, int sourcePosition, int targetPosition, double score)
         {
