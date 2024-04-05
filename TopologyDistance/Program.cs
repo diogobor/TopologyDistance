@@ -12,14 +12,20 @@ namespace TopologyDistance
         private static string[] HeaderLineCSV { get; set; }
         static void Main(string[] args)
         {
-            List<PPI> ppis = new();
-            //string filePath = @"D:\Experimental_data\Cong\cytoscapedefaultnode.csv";
-            string filePath = @"D:\Experimental_data\Cong\cytoscape.csv";
-            string fastaFile = @"D:\Experimental_data\Cong\20220323_CW_DSBSO_Paper_HEK_db.fasta";
-            string distance_file = @"D:\Experimental_data\Cong\distance_output.csv";
-            bool useAlphaFold = false;
-            int treashold_angstroms = 35;
+            string mainPath = @"D:\Experimental_data\Cong\";
 
+            //string fileName = $"{mainPath}cytoscapedefaultnode.csv";
+            string fileName = $"{mainPath}Scout_DSBSO_cytoscape.csv";
+            string fastaFile = $"{mainPath}20220323_CW_DSBSO_Paper_HEK_db.fasta";
+
+            bool useAlphaFold = false;
+            int threshold_angstroms = 35;
+            string tool = "Scout";
+            string crosslinker = "DSBSO";
+
+            string distance_file = $"{mainPath}{tool}_{crosslinker}_distance_output_{threshold_angstroms}A.csv";
+
+            List<PPI> ppis = new();
             if (Management.CleanTmpFiles() == false)
                 return;
 
@@ -56,7 +62,7 @@ namespace TopologyDistance
             #region read csv file
             // Provide the path to your CSV file
             // Read all lines from the CSV file
-            string[] lines = File.ReadAllLines(filePath);
+            string[] lines = File.ReadAllLines(fileName);
 
             // Skip the header line (assuming the first line is header)
 
@@ -261,6 +267,7 @@ namespace TopologyDistance
                     if (valid)
                         valid_PPIs.Add(ppi);
                 }
+                
                 Console.WriteLine();
             }
 
@@ -272,13 +279,13 @@ namespace TopologyDistance
             StringBuilder sb_distances = new();
             foreach (var _ppi in valid_PPIs)
             {
-                lower_threshold += _ppi.crosslinks.Count(a => a.distance <= treashold_angstroms);
-                upper_threshold += _ppi.crosslinks.Count(a => a.distance > treashold_angstroms);
-                sb_distances.Append(String.Join('\n', _ppi.crosslinks.Select(a => a.distance).ToList()));
+                lower_threshold += _ppi.crosslinks.Count(a => a.distance <= threshold_angstroms);
+                upper_threshold += _ppi.crosslinks.Count(a => a.distance > threshold_angstroms);
+                sb_distances.AppendLine(String.Join('\n', _ppi.crosslinks.Select(a => a.distance).ToList()));
             }
 
             Console.WriteLine($"Total XLs: {valid_PPIs.Sum(a => a.crosslinks.Count)}");
-            Console.WriteLine($"Lower than {treashold_angstroms}A: {lower_threshold}\nUpper than {treashold_angstroms}A: {upper_threshold}");
+            Console.WriteLine($"Lower than {threshold_angstroms}A: {lower_threshold}\nUpper than {threshold_angstroms}A: {upper_threshold}");
 
             File.WriteAllText(distance_file, sb_distances.ToString());
             Management.CleanTmpFiles();
